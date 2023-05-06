@@ -1,0 +1,218 @@
+#include <ESP8266WiFi.h>
+#include <PubSubClient.h>
+
+// Relays
+#define RelayPin1 D1  //D1
+#define RelayPin2 D2  //D2
+
+// Switches
+#define SwitchPin1 D3  //SD3
+#define SwitchPin2 D4   //D3 
+
+//WiFi Status LED
+#define wifiLed D0   //D0
+
+int toggleState_1 = 1; //Define integer to remember the toggle state for relay 1
+int toggleState_2 = 1; //Define integer to remember the toggle state for relay 2
+
+// Update these with values suitable for your network.
+
+const char* ssid = ""; //WiFI Name
+const char* password = ""; //WiFi Password
+const char* mqttServer = "ecb50702b2a145929b5071ee56df0610.s2.eu.hivemq.cloud";
+const char* clientID = "EspClient001"; // client id
+
+#define sub1 "ethenlight1"
+#define sub2 "ethenlight2"
+
+#define pub1 "ethenlight1"
+#define pub2 "ethenlight2"
+
+WiFiClient espClient;
+PubSubClient client(espClient);
+
+unsigned long lastMsg = 0;
+#define MSG_BUFFER_SIZE  (80)
+char msg[MSG_BUFFER_SIZE];
+int value = 0;
+
+void setup_wifi()
+{
+  delay(10);
+  WiFi.begin(ssid, password);
+
+  while (WiFi.status() != WL_CONNECTED)
+  {
+    delay(500);
+    Serial.print(".");
+  }
+
+  Serial.println("");
+  Serial.println("WiFi connected");
+  Serial.println("IP address: ");
+  Serial.println(WiFi.localIP());
+}
+
+void reconnect()
+{
+  while (!client.connected())
+  {
+    if (client.connect(clientID)) 
+    {
+      Serial.println("MQTT connected");
+      // ... and resubscribe
+      client.subscribe(sub1);
+      client.subscribe(sub2);
+    } 
+    else
+    {
+      Serial.print("failed, rc=");
+      Serial.print(client.state());
+      Serial.println(" try again in 5 seconds");
+      // Wait 5 seconds before retrying
+      delay(5000);
+    }
+  }
+}
+
+void callback(char* topic, byte* payload, unsigned int length)
+{
+  Serial.print("Message arrived [");
+  Serial.print(topic);
+  Serial.print("] ");
+
+// first subscriber
+  if (strstr(topic, sub1))
+  {
+    for (int i = 0; i < length; i++)
+    {
+      Serial.print((char)payload[i]);
+    }
+
+    Serial.println();
+
+    // Switch on the LED if an 1 was received as first character
+    if ((bool)payload[0] == false)
+    {
+      digitalWrite(RelayPin1, LOW);   // Turn the LED on (Note that LOW is the voltage level
+      toggleState_1 = 0;
+      client.publish(pub1, "false");
+    } 
+    else
+    {
+      digitalWrite(RelayPin1, HIGH);  // Turn the LED off by making the voltage HIGH
+      toggleState_1 = 1;
+      client.publish(pub1, "true");
+    }    
+  }
+// second subscriber
+  else if (strstr(topic, sub2))
+  {
+    for (int i = 0; i < length; i++)
+    {
+      Serial.print((char)payload[i]);
+    }
+    Serial.println();
+
+    // Switch on the LED if an 1 was received as first character
+    if ((bool)payload[0] == false)
+    {
+      digitalWrite(RelayPin2, LOW);   // Turn the LED on (Note that LOW is the voltage level
+      toggleState_2 = 0;
+      client.publish(pub2, "false");
+    }
+    else
+    {
+      digitalWrite(RelayPin2, HIGH);  // Turn the LED off by making the voltage HIGH
+      toggleState_2 = 1;
+      client.publish(pub2, "true");
+    }
+  }
+  else
+  {
+    Serial.println("unsubscribed topic");
+  }
+}
+
+void manual_control()
+{
+    //Manual Switch Control
+    if (digitalRead(SwitchPin1) == LOW)
+    {
+      delay(200);
+      if(toggleState_1 == 1)
+      {
+        digitalWrite(RelayPin1, LOW); // turn on relay 1
+        toggleState_1 = 0;
+        client.publish(pub1, "false");
+        Serial.println("Light1 ON");
+      }
+      else
+      {
+        digitalWrite(RelayPin1, HIGH); // turn off relay 1
+        toggleState_1 = 1;
+        client.publish(pub1, "true");
+        Serial.println("Light1 OFF");
+      }
+    }
+    else if (digitalRead(SwitchPin2) == LOW)
+    {
+      delay(200);
+      if(toggleState_2 == 1)
+      {
+        digitalWrite(RelayPin2, LOW); // turn on relay 2
+        toggleState_2 = 0;
+        client.publish(pub2, "false");
+        Serial.println("Light2 ON");
+      }
+      else
+      {
+        digitalWrite(RelayPin2, HIGH); // turn off relay 2
+        toggleState_2 = 1;
+        client.publish(pub2, "true");
+        Serial.println("Light2 OFF");
+      }
+    }
+    delay(100);
+}
+
+void setup()
+{
+  Serial.begin(115200);
+    
+  pinMode(RelayPin1, OUTPUT);
+  pinMode(RelayPin2, OUTPUT);
+ 
+  pinMode(SwitchPin1, INPUT_PULLUP);
+  pinMode(SwitchPin2, INPUT_PULLUP);
+ 
+
+  pinMode(wifiLed, OUTPUT);
+
+  //During Starting all Relays should TURN OFF
+  digitalWrite(RelayPin1, HIGH);
+  digitalWrite(RelayPin2, HIGH);
+  
+  //During Starting WiFi LED should TURN OFF
+  digitalWrite(wifiLed, HIGH);
+
+  setup_wifi();
+
+  client.setServer(mqttServer, 8883);
+  client.setCallback(callback);
+}
+
+void loop()
+{
+  if (!client.connected())
+  {
+    digitalWrite(wifiLed, HIGH);
+    reconnect();
+  }
+  else
+  {
+    digitalWrite(wifiLed, LOW);
+    manual_control();
+  }
+  client.loop();
+}
