@@ -1,5 +1,11 @@
 #include <ESP8266WiFi.h>
 #include <PubSubClient.h>
+#include <time.h>
+#include <TZ.h>
+#include <FS.h>
+#include <LittleFS.h>
+#include <CertStoreBearSSL.h>
+
 
 // Relays
 #define RelayPin1 D1  //D1
@@ -19,26 +25,35 @@ int toggleState_2 = 1; //Define integer to remember the toggle state for relay 2
 
 const char* ssid = ""; //WiFI Name
 const char* password = ""; //WiFi Password
-const char* mqttServer = "ecb50702b2a145929b5071ee56df0610.s2.eu.hivemq.cloud";
-const char* clientID = "EspClient001"; // client id
+const char* mqttServer = ""; //MQTT server name
+const char* mqttUserName = ""; //MQTT username
+const char* mqttPassword = ""; //MQTT Password
 
-#define sub1 "ethenlight1"
-#define sub2 "ethenlight2"
+BearSSL::CertStore certStore;
 
-#define pub1 "ethenlight1"
-#define pub2 "ethenlight2"
+#define sub1 "sethenlight1"
+#define sub2 "sethenlight2"
 
-WiFiClient espClient;
-PubSubClient client(espClient);
+#define pub1 "pethenlight1"
+#define pub2 "pethenlight2"
+
+WiFiClientSecure espClient;
+PubSubClient * client;
 
 unsigned long lastMsg = 0;
-#define MSG_BUFFER_SIZE  (80)
+#define MSG_BUFFER_SIZE  (500)
 char msg[MSG_BUFFER_SIZE];
 int value = 0;
 
 void setup_wifi()
 {
   delay(10);
+  // We start by connecting to a WiFi network
+  Serial.println();
+  Serial.print("Connecting to ");
+  Serial.println(ssid);
+
+  WiFi.mode(WIFI_STA);
   WiFi.begin(ssid, password);
 
   while (WiFi.status() != WL_CONNECTED)
@@ -47,27 +62,51 @@ void setup_wifi()
     Serial.print(".");
   }
 
+  randomSeed(micros());
+
   Serial.println("");
   Serial.println("WiFi connected");
   Serial.println("IP address: ");
   Serial.println(WiFi.localIP());
 }
 
+void setDateTime()
+{
+  // You can use your own timezone, but the exact time is not used at all.
+  // Only the date is needed for validating the certificates.
+  configTime(TZ_Europe_Berlin, "pool.ntp.org", "time.nist.gov");
+
+  Serial.print("Waiting for NTP time sync: ");
+  time_t now = time(nullptr);
+  while (now < 8 * 3600 * 2)
+  {
+    delay(100);
+    Serial.print(".");
+    now = time(nullptr);
+  }
+  Serial.println();
+
+  struct tm timeinfo;
+  gmtime_r(&now, &timeinfo);
+}
+
 void reconnect()
 {
-  while (!client.connected())
+  while (!client->connected())
   {
-    if (client.connect(clientID)) 
+    String clientId = "ESP8266Client - MyClient";
+    
+    if (client->connect(clientId.c_str(), mqttUserName, mqttPassword)) 
     {
       Serial.println("MQTT connected");
       // ... and resubscribe
-      client.subscribe(sub1);
-      client.subscribe(sub2);
+      client->subscribe(sub1);
+      client->subscribe(sub2);
     } 
     else
     {
       Serial.print("failed, rc=");
-      Serial.print(client.state());
+      Serial.print(client->state());
       Serial.println(" try again in 5 seconds");
       // Wait 5 seconds before retrying
       delay(5000);
@@ -80,52 +119,53 @@ void callback(char* topic, byte* payload, unsigned int length)
   Serial.print("Message arrived [");
   Serial.print(topic);
   Serial.print("] ");
+  Serial.print("\nList of subscribers\n");
+  Serial.println(sub1);
+  Serial.println(sub2);
+  String localTopic = topic;
+  String localPayload = "";
+  Serial.println(localTopic == sub1);
+  Serial.println(localTopic == sub2);
 
-// first subscriber
-  if (strstr(topic, sub1))
-  {
-    for (int i = 0; i < length; i++)
+  for (int i = 0; i < length; i++)
     {
-      Serial.print((char)payload[i]);
+      localPayload += (char)payload[i];
     }
 
-    Serial.println();
+  Serial.println(localPayload);
 
+// first subscriber
+  if (localTopic == sub1)
+  {
     // Switch on the LED if an 1 was received as first character
-    if ((bool)payload[0] == false)
+    if (localPayload == "False" || localPayload == "false")
     {
       digitalWrite(RelayPin1, LOW);   // Turn the LED on (Note that LOW is the voltage level
       toggleState_1 = 0;
-      client.publish(pub1, "false");
+      client->publish(pub1, "false");
     } 
     else
     {
       digitalWrite(RelayPin1, HIGH);  // Turn the LED off by making the voltage HIGH
       toggleState_1 = 1;
-      client.publish(pub1, "true");
+      client->publish(pub1, "true");
     }    
   }
 // second subscriber
-  else if (strstr(topic, sub2))
+  else if (localTopic == sub2)
   {
-    for (int i = 0; i < length; i++)
-    {
-      Serial.print((char)payload[i]);
-    }
-    Serial.println();
-
     // Switch on the LED if an 1 was received as first character
-    if ((bool)payload[0] == false)
+    if (localPayload == "False" || localPayload == "false")
     {
       digitalWrite(RelayPin2, LOW);   // Turn the LED on (Note that LOW is the voltage level
       toggleState_2 = 0;
-      client.publish(pub2, "false");
+      client->publish(pub2, "false");
     }
     else
     {
       digitalWrite(RelayPin2, HIGH);  // Turn the LED off by making the voltage HIGH
       toggleState_2 = 1;
-      client.publish(pub2, "true");
+      client->publish(pub2, "true");
     }
   }
   else
@@ -144,14 +184,14 @@ void manual_control()
       {
         digitalWrite(RelayPin1, LOW); // turn on relay 1
         toggleState_1 = 0;
-        client.publish(pub1, "false");
+        client->publish(pub1, "false");
         Serial.println("Light1 ON");
       }
       else
       {
         digitalWrite(RelayPin1, HIGH); // turn off relay 1
         toggleState_1 = 1;
-        client.publish(pub1, "true");
+        client->publish(pub1, "true");
         Serial.println("Light1 OFF");
       }
     }
@@ -162,14 +202,14 @@ void manual_control()
       {
         digitalWrite(RelayPin2, LOW); // turn on relay 2
         toggleState_2 = 0;
-        client.publish(pub2, "false");
+        client->publish(pub2, "false");
         Serial.println("Light2 ON");
       }
       else
       {
         digitalWrite(RelayPin2, HIGH); // turn off relay 2
         toggleState_2 = 1;
-        client.publish(pub2, "true");
+        client->publish(pub2, "true");
         Serial.println("Light2 OFF");
       }
     }
@@ -178,8 +218,11 @@ void manual_control()
 
 void setup()
 {
-  Serial.begin(115200);
-    
+  //Serial.begin(115200);
+  delay(500);
+  Serial.begin(9600);
+  delay(500);
+
   pinMode(RelayPin1, OUTPUT);
   pinMode(RelayPin2, OUTPUT);
  
@@ -196,15 +239,32 @@ void setup()
   //During Starting WiFi LED should TURN OFF
   digitalWrite(wifiLed, HIGH);
 
+  LittleFS.begin();
   setup_wifi();
+  setDateTime();
 
-  client.setServer(mqttServer, 8883);
-  client.setCallback(callback);
+
+  int numCerts = certStore.initCertStore(LittleFS, PSTR("/certs.idx"), PSTR("/certs.ar"));
+  Serial.printf("Number of CA certs read: %d\n", numCerts);
+  if (numCerts == 0)
+  {
+    Serial.printf("No certs found. Did you run certs-from-mozilla.py and upload the LittleFS directory before running?\n");
+    return; // Can't connect to anything w/o certs!
+  }
+
+  BearSSL::WiFiClientSecure *bear = new BearSSL::WiFiClientSecure();
+  // Integrate the cert store with this connection
+  bear->setCertStore(&certStore);
+
+  client = new PubSubClient(*bear);
+  
+  client->setServer(mqttServer, 8883);
+  client->setCallback(callback);
 }
 
 void loop()
 {
-  if (!client.connected())
+  if (!client->connected())
   {
     digitalWrite(wifiLed, HIGH);
     reconnect();
@@ -214,5 +274,14 @@ void loop()
     digitalWrite(wifiLed, LOW);
     manual_control();
   }
-  client.loop();
+
+   unsigned long now = millis();
+  if (now - lastMsg > 2000) {
+    lastMsg = now;
+    ++value;
+    snprintf (msg, MSG_BUFFER_SIZE, "hello world #%ld", value);
+    //Serial.println(msg);
+  }
+  
+  client->loop();
 }
