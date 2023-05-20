@@ -5,7 +5,7 @@
 #include <FS.h>
 #include <LittleFS.h>
 #include <CertStoreBearSSL.h>
-
+#include <bits/stdc++.h>
 
 // Relays
 #define RelayPin1 D1  //D1
@@ -14,6 +14,17 @@
 // Switches
 #define SwitchPin1 D3  //SD3
 #define SwitchPin2 D4   //D3 
+
+// temp
+#define THERMISTORPIN A0
+
+#define THERMISTORNOMINAL 10000      
+#define TEMPERATURENOMINAL 25
+#define NUMSAMPLES 10
+#define BCOEFFICIENT 3950
+#define SERIESRESISTOR 10000 
+//prepare pole 
+uint16_t samples[NUMSAMPLES];
 
 //WiFi Status LED
 #define wifiLed D0   //D0
@@ -25,9 +36,9 @@ int toggleState_2 = 1; //Define integer to remember the toggle state for relay 2
 
 const char* ssid = ""; //WiFI Name
 const char* password = ""; //WiFi Password
-const char* mqttServer = ""; //MQTT server name
-const char* mqttUserName = ""; //MQTT username
-const char* mqttPassword = ""; //MQTT Password
+const char* mqttServer = "";
+const char* mqttUserName = "";
+const char* mqttPassword = "";
 
 BearSSL::CertStore certStore;
 
@@ -36,6 +47,8 @@ BearSSL::CertStore certStore;
 
 #define pub1 "pethenlight1"
 #define pub2 "pethenlight2"
+
+#define pub3 "ethentemp"
 
 WiFiClientSecure espClient;
 PubSubClient * client;
@@ -116,23 +129,19 @@ void reconnect()
 
 void callback(char* topic, byte* payload, unsigned int length)
 {
-  Serial.print("Message arrived [");
+  Serial.print("Message arrived for topic [");
   Serial.print(topic);
   Serial.print("] ");
-  Serial.print("\nList of subscribers\n");
-  Serial.println(sub1);
-  Serial.println(sub2);
   String localTopic = topic;
   String localPayload = "";
-  Serial.println(localTopic == sub1);
-  Serial.println(localTopic == sub2);
-
+  Serial.print("with requested data [");
   for (int i = 0; i < length; i++)
     {
       localPayload += (char)payload[i];
     }
 
-  Serial.println(localPayload);
+  Serial.print(localPayload);
+  Serial.println("]");
 
 // first subscriber
   if (localTopic == sub1)
@@ -172,6 +181,47 @@ void callback(char* topic, byte* payload, unsigned int length)
   {
     Serial.println("unsubscribed topic");
   }
+}
+
+void publish_temp()
+{
+  uint8_t i;
+  float average;
+ 
+ // saving values from input to pole
+  for (i=0; i< NUMSAMPLES; i++) {
+   samples[i] = analogRead(THERMISTORPIN);
+   delay(10);
+  }
+ 
+   // average value of input
+  average = 0;
+  for (i=0; i< NUMSAMPLES; i++) {
+     average += samples[i];
+  }
+  average /= NUMSAMPLES;
+ 
+  //resistance
+  average = 1023 / average - 1;
+  average = SERIESRESISTOR / average;
+
+ //resistence to temperature
+  float temperature;
+  temperature = average / THERMISTORNOMINAL; 
+  temperature = log(temperature);   
+  temperature /= BCOEFFICIENT;                  
+  temperature += 1.0 / (TEMPERATURENOMINAL + 273.15); 
+  temperature = 1.0 / temperature;                 
+  temperature -= 273.15; // convert to C
+ 
+  Serial.print("Temperature: "); 
+  Serial.print(temperature);
+  Serial.println("°C");
+
+  String temp = String(temperature);
+ 
+  delay(1000);
+  client->publish(pub3, temp.c_str());
 }
 
 void manual_control()
@@ -229,12 +279,11 @@ void setup()
   pinMode(SwitchPin1, INPUT_PULLUP);
   pinMode(SwitchPin2, INPUT_PULLUP);
  
-
   pinMode(wifiLed, OUTPUT);
 
   //During Starting all Relays should TURN OFF
-  digitalWrite(RelayPin1, HIGH);
-  digitalWrite(RelayPin2, HIGH);
+  digitalWrite(RelayPin1, LOW);
+  digitalWrite(RelayPin2, LOW);
   
   //During Starting WiFi LED should TURN OFF
   digitalWrite(wifiLed, HIGH);
@@ -282,6 +331,6 @@ void loop()
     snprintf (msg, MSG_BUFFER_SIZE, "hello world #%ld", value);
     //Serial.println(msg);
   }
-  
+  publish_temp();
   client->loop();
 }
